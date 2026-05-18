@@ -1,6 +1,7 @@
 package requestid
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -11,121 +12,104 @@ import (
 	nanoid "github.com/matoous/go-nanoid/v2"
 )
 
-func init() {
-	caddy.RegisterModule(RequestID{})
+const defaultLength = 21
+
+const placeholder = "http.request_id"
+
+func init() { //nolint:gochecknoinits // caddy plugin registration in the init func
+	caddy.RegisterModule(&RequestID{})
 	httpcaddyfile.RegisterHandlerDirective("request_id", parseCaddyfile)
 }
 
-// RequestID implements an HTTP handler that writes a
-// unique request ID to response headers.
 type RequestID struct {
-	// Length of standalone ID
-	Length int `json:"length"`
-
-	// Map of additional IDs to set
+	Length     int            `json:"length"`
 	Additional map[string]int `json:"additional,omitempty"`
 }
 
-// CaddyModule returns the Caddy module information.
-func (RequestID) CaddyModule() caddy.ModuleInfo {
+func (*RequestID) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.request_id",
 		New: func() caddy.Module { return new(RequestID) },
 	}
 }
 
-// Provision implements caddy.Provisioner.
-func (m *RequestID) Provision(ctx caddy.Context) error {
+func (m *RequestID) Provision(_ caddy.Context) error {
 	if m.Length < 1 {
-		m.Length = 21
+		m.Length = defaultLength
 	}
-
-	if m.Additional == nil {
-		m.Additional = make(map[string]int)
+	for name, length := range m.Additional {
+		if length < 1 {
+			return fmt.Errorf("additional ID %q: length must be at least 1, got %d", name, length)
+		}
 	}
-
 	return nil
 }
 
-// ServeHTTP implements caddyhttp.MiddlewareHandler.
-func (m RequestID) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
-
-	id := nanoid.Must(m.Length)
-	repl.Set("http.request_id", id)
-
-	for key, value := range m.Additional {
-		id := nanoid.Must(value)
-		repl.Set("http.request_id."+key, id)
+func (m *RequestID) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	repl, ok := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
+	if !ok {
+		return next.ServeHTTP(w, r)
 	}
-
+	if err := setID(repl, placeholder, m.Length); err != nil {
+		return err
+	}
+	for name, length := range m.Additional {
+		if err := setID(repl, placeholder+"."+name, length); err != nil {
+			return err
+		}
+	}
 	return next.ServeHTTP(w, r)
 }
 
-// UnmarshalCaddyfile - this is a no-op
+func setID(repl *caddy.Replacer, key string, length int) error {
+	id, err := nanoid.New(length)
+	if err != nil {
+		return fmt.Errorf("generating ID for %q: %w", key, err)
+	}
+	repl.Set(key, id)
+	return nil
+}
+
 func (m *RequestID) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	arg1 := d.NextArg()
-	arg2 := d.NextArg()
-
-	// Parse standalone length
-	if arg1 && arg2 {
-		val := d.Val()
-		len, err := strconv.Atoi(val)
-
+	d.Next()
+	if d.NextArg() {
+		length, err := strconv.Atoi(d.Val())
 		if err != nil {
-			return d.Err("failed to convert length to int")
+			return d.Errf("invalid length %q: %v", d.Val(), err)
 		}
-
-		if len < 1 {
-			return d.Err("length cannot be less than 1")
-		}
-
-		m.Length = len
+		m.Length = length
 	}
-
-	if m.Additional == nil {
-		m.Additional = make(map[string]int)
+	if d.NextArg() {
+		return d.ArgErr()
 	}
-
-	// Parse additional IDs
 	for d.NextBlock(0) {
-		key := d.Val()
+		name := d.Val()
 		if !d.NextArg() {
 			return d.ArgErr()
 		}
-
-		val := d.Val()
-		len, err := strconv.Atoi(val)
-
+		length, err := strconv.Atoi(d.Val())
 		if err != nil {
-			return d.Err("failed to convert length to int")
+			return d.Errf("invalid length %q for %q: %v", d.Val(), name, err)
 		}
-
-		if len < 1 {
-			return d.Err("length cannot be less than 1")
+		if _, ok := m.Additional[name]; ok {
+			return d.Errf("duplicate key: %s", name)
 		}
-
-		if _, ok := m.Additional[key]; ok {
-			return d.Errf("duplicate key: %v\n", key)
+		if m.Additional == nil {
+			m.Additional = make(map[string]int)
 		}
-
-		m.Additional[key] = len
+		m.Additional[name] = length
 	}
-
 	return nil
 }
 
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	m := new(RequestID)
-	err := m.UnmarshalCaddyfile(h.Dispenser)
-	if err != nil {
+	if err := m.UnmarshalCaddyfile(h.Dispenser); err != nil {
 		return nil, err
 	}
-
 	return m, nil
 }
 
-// Interface guards
 var (
 	_ caddy.Provisioner           = (*RequestID)(nil)
 	_ caddyhttp.MiddlewareHandler = (*RequestID)(nil)
