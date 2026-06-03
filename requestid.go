@@ -34,8 +34,10 @@ func (*RequestID) CaddyModule() caddy.ModuleInfo {
 }
 
 func (m *RequestID) Provision(_ caddy.Context) error {
-	if m.Length < 1 {
+	if m.Length == 0 {
 		m.Length = defaultLength
+	} else if m.Length < 0 {
+		return fmt.Errorf("length cannot be negative, got %d", m.Length)
 	}
 	for name, length := range m.Additional {
 		if length < 1 {

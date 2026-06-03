@@ -1,0 +1,9 @@
+---
+stages:
+  - test
+
+include:
+  - component: $CI_SERVER_FQDN/ci/security/bundle@1
+  - component: $CI_SERVER_FQDN/ci/golang/init-vet@2
+  - component: $CI_SERVER_FQDN/ci/golang/lint@2
+  - component: $CI_SERVER_FQDN/ci/golang/test@2
